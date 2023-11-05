@@ -45,12 +45,6 @@ pub struct EnvTimeAmp { time: f32, min: f32, max: f32 }
 impl EnvTimeAmp { pub fn new(time: f32, min: f32, max: f32) -> Self { Self { time, min, max } } }
 
 #[derive(Debug)]
-// pub struct Envelope {
-//     pub attack: EnvTimeAmp,
-//     pub sustain: EnvTimeAmp,
-//     pub decay: EnvTimeAmp,
-//     pub release: EnvTimeAmp, 
-// }
 pub struct Envelope(f32, f32, f32, f32);
 
 impl Envelope {
