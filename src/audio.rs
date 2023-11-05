@@ -5,6 +5,7 @@ use crossterm::event::KeyCode;
 
 
 use crate::input::{KeyboardBuffer, KeyboardHandler};
+use crate::secs_now;
 
 pub fn thread_audio(mtx_instrmnt: Arc<Mutex<Instrument>>) {
     let host: cpal::Host = cpal::default_host();
@@ -44,39 +45,26 @@ pub struct EnvTimeAmp { time: f32, min: f32, max: f32 }
 impl EnvTimeAmp { pub fn new(time: f32, min: f32, max: f32) -> Self { Self { time, min, max } } }
 
 #[derive(Debug)]
-pub struct Envelope {
-    pub attack: EnvTimeAmp,
-    pub sustain: EnvTimeAmp,
-    pub decay: EnvTimeAmp,
-    pub release: EnvTimeAmp, 
-}
+// pub struct Envelope {
+//     pub attack: EnvTimeAmp,
+//     pub sustain: EnvTimeAmp,
+//     pub decay: EnvTimeAmp,
+//     pub release: EnvTimeAmp, 
+// }
+pub struct Envelope(f32, f32, f32, f32);
 
 impl Envelope {
-    fn new() -> Envelope { 
-        return Envelope {
-            attack: EnvTimeAmp::new(1.0, 0.0, 1.0), 
-            sustain: EnvTimeAmp::new(1.0, 1.0, 1.0), 
-            decay: EnvTimeAmp::new(1.0, 1.0, 1.0), 
-            release: EnvTimeAmp::new(2.0, 1.0, 0.0) 
-        };
-    }
+    fn new() -> Envelope {  return Envelope(1.0, 1.0, 0.2, 1.0); }
 
-    pub fn sample(&self, t: f32) -> f32 {
-        let (env, relative_time) = self.select_env_time_amp(t);
-        return env.min*(1.0-relative_time) + env.max*relative_time;
-    }
-
-    fn select_env_time_amp(&self, t: f32) -> (EnvTimeAmp, f32) {
-        let envs: Vec<EnvTimeAmp> = vec![self.attack, self.sustain, self.decay, self.release];
-        let mut time_until_last_envelope = 0.0;
-        for env in envs[..envs.len()-1].iter() {
-            let relative_time: f32 = t - time_until_last_envelope;
-            time_until_last_envelope += env.time;
-            if t <= time_until_last_envelope {
-                return (*env, relative_time / env.time);
+    pub fn sample(&self, t: f32, t0: f32, t1: Option<f32>) -> f32 {
+        macro_rules! lerp { ($t:expr, $a:expr, $b:expr) => ($a*(1.0-$t) + $b*$t) }
+        macro_rules! lt { ($a:expr, $b:expr) => ( ($a.clamp(0.0, $b)/$b) ) }
+        match t1 {
+            Some(t1_) => { lerp!(lt!(t-t1_, self.3), self.2, 0.0) },
+            None => { 
+                lerp!(lt!(t-t0-self.0, self.1), lerp!(lt!(t-t0, self.0), 0.0, 1.0), self.2) 
             }
         }
-        (self.release, (t-time_until_last_envelope) / self.release.time)
     }
 }
 
@@ -95,7 +83,8 @@ pub struct Instrument {
     wave_generator: Box<dyn WaveGenerator + Send>,
     keyboard_buffer: KeyboardBuffer,
     envelope: Envelope,
-    key_to_freq: HashMap<KeyCode, f32>
+    key_to_freq: HashMap<KeyCode, f32>,
+    clock: std::time::Instant
 }
 
 impl std::fmt::Debug for Instrument {
@@ -113,11 +102,16 @@ impl Instrument {
     pub fn new() -> Instrument { 
         let mut k2f = HashMap::<KeyCode, f32>::new();
         k2f.insert(KeyCode::Char('z'), 130.81); // C
+        k2f.insert(KeyCode::Char('s'), 138.59); // #
         k2f.insert(KeyCode::Char('x'), 146.83);
+        k2f.insert(KeyCode::Char('d'), 155.56);
         k2f.insert(KeyCode::Char('c'), 164.81);
         k2f.insert(KeyCode::Char('v'), 174.61);
+        k2f.insert(KeyCode::Char('g'), 185.00);
         k2f.insert(KeyCode::Char('b'), 196.00);
+        k2f.insert(KeyCode::Char('h'), 207.65);
         k2f.insert(KeyCode::Char('n'), 220.00);
+        k2f.insert(KeyCode::Char('j'), 233.08);
         k2f.insert(KeyCode::Char('m'), 246.94);
         let i = Instrument { 
             cursor: 0, 
@@ -126,7 +120,8 @@ impl Instrument {
             wave_generator: Box::new(SinWave),
             keyboard_buffer: KeyboardBuffer::new(),
             envelope: Envelope::new(),
-            key_to_freq: k2f
+            key_to_freq: k2f,
+            clock: std::time::Instant::now()
         };
         return i;
     }
@@ -145,13 +140,12 @@ impl Instrument {
 
     pub fn gen(&self, i: u128) -> f32 {  
         let t = self.t(i);
-        let now = std::time::SystemTime::now();
+        let now = self.clock.elapsed().as_secs_f32();
 
         self.keyboard_buffer.event_buffer.iter()
             .map(|event| {
-                let env_t = now.duration_since(event.1.time_press).unwrap().as_secs_f32();
                 let freq = self.key_to_freq.get(event.0).unwrap_or(&0.0);
-                self.wave_generator.gen(t, *freq) * self.envelope.sample(env_t)
+                self.wave_generator.gen(t, *freq) * self.envelope.sample(now, event.1.time_press, event.1.time_release)
             })
             .sum()
     }
@@ -162,27 +156,18 @@ impl Instrument {
 
 unsafe impl Sync for Instrument { }
 impl KeyboardHandler for Instrument {
-    fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) {
-        self.keyboard_buffer.handle_key_event(event);
+    fn handle_key_event(&mut self, event: crossterm::event::KeyEvent, timestamp: f32) {
+        self.keyboard_buffer.handle_key_event(event, timestamp);
     }
 
     fn cleanup_events(&mut self) {
-        self.keyboard_buffer.cleanup_events();
+        self.keyboard_buffer.clean_stale_events(self.clock.elapsed().as_secs_f32(), Some(self.envelope.3));
     }
 }
 
 
 mod audio_tests {
     use crate::audio::{EnvTimeAmp, Envelope};
-
-    fn default_envelope() -> Envelope {
-        return Envelope { 
-            attack: EnvTimeAmp::new(1.0, 0.0, 1.0), 
-            sustain: EnvTimeAmp::new(1.0, 2.0, 3.0), 
-            decay: EnvTimeAmp::new(1.0, 4.0, 5.0), 
-            release: EnvTimeAmp::new(1.0, 6.0, 7.0) 
-        };
-    }
 
     macro_rules! assert_approx_eq {
         ($a:expr, $b:expr) => {{
@@ -192,25 +177,17 @@ mod audio_tests {
 
     #[test]
     fn test_envelope() {
-        let e = default_envelope();
+        let e = Envelope(1.0, 1.0, 0.5, 1.0);
 
-        assert_approx_eq!(e.sample(0.0), 0.0);
-        assert_approx_eq!(e.sample(1.0-f32::EPSILON), 1.0);
-        assert_approx_eq!(e.sample(1.0+f32::EPSILON), 2.0);
-        // assert_eq!(e.sample(0.45), 4.0);
-        // assert_eq!(e.sample(0.0), 0.0);
-    }
+        assert_approx_eq!(e.sample(-100.0, 0.0, None), 0.0);
+        assert_approx_eq!(e.sample(-0.1, 0.0, None), 0.0);
+        assert_approx_eq!(e.sample(0.0, 0.0, None), 0.0);
+        assert_approx_eq!(e.sample(0.1, 0.0, None), 0.1);
+        assert_approx_eq!(e.sample(1.0, 0.0, None), 1.0);
+        assert_approx_eq!(e.sample(2.0, 0.0, None), 0.5);
+        assert_approx_eq!(e.sample(100.0, 0.0, None), 0.5);
+        assert_approx_eq!(e.sample(3.0, 0.0, Some(2.0)), 0.0);
 
-    #[test]
-    fn test_select_envelope() {
-        let e = default_envelope(); 
-        assert_eq!(e.select_env_time_amp(0.0).0, e.attack);
-        assert_eq!(e.select_env_time_amp(1.0-f32::EPSILON).0, e.attack);
-        assert_eq!(e.select_env_time_amp(1.0+f32::EPSILON).0, e.sustain);
-        assert_eq!(e.select_env_time_amp(2.0-f32::EPSILON*1.0001).0, e.sustain); // why
-        assert_eq!(e.select_env_time_amp(2.0+f32::EPSILON*1.0001).0, e.decay); // why
-        assert_eq!(e.select_env_time_amp(3.0-f32::EPSILON*1.0001).0, e.decay); // whywhy
-        assert_eq!(e.select_env_time_amp(3.0+f32::EPSILON*1.0001).0, e.release); // whywhy
     }
 
 }

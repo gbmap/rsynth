@@ -19,7 +19,6 @@ fn thread_debug(m: Arc<Mutex<Instrument>>) {
             let i = &mut m.lock().unwrap();
             stdout.execute(Clear(crossterm::terminal::ClearType::All)).unwrap();
             stdout.execute(MoveTo(0, 0)).unwrap();
-            println!("{:?}", i);
             println!("{:?}", i.keyboard_buffer().event_buffer());
             // println!("🔥");
         }
@@ -29,7 +28,7 @@ fn thread_debug(m: Arc<Mutex<Instrument>>) {
 
 struct DebugKeyboardHandler;
 impl KeyboardHandler for DebugKeyboardHandler {
-    fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) {
+    fn handle_key_event(&mut self, event: crossterm::event::KeyEvent, timestamp: f32) {
         match event.kind {
             crossterm::event::KeyEventKind::Press => { println!("press"); },
             crossterm::event::KeyEventKind::Release => { println!("release"); },
