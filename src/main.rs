@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use crossterm::ExecutableCommand;
 use crossterm::terminal::Clear;
 use crossterm::cursor::MoveTo;
-use audio::{Instrument, thread_audio};
+use audio::instrument::{Instrument, thread_audio};
 use input::{KeyboardHandler, thread_input};
 
 

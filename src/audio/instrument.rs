@@ -1,11 +1,15 @@
+/// Instrument module.
+///
+/// implements input handling and buffer data generation to be passed
+/// to the sound card.
+///
+
 use cpal::{self, traits::{HostTrait, DeviceTrait, StreamTrait}};
 use std::{sync::{Arc, Mutex}, collections::HashMap};
-// use std::collections::HashMap;
 use crossterm::event::KeyCode;
 
-
 use crate::input::{KeyboardBuffer, KeyboardHandler};
-use crate::secs_now;
+use crate::audio::waves::{WaveGenerator, Envelope};
 
 pub fn thread_audio(mtx_instrmnt: Arc<Mutex<Instrument>>) {
     let host: cpal::Host = cpal::default_host();
@@ -39,37 +43,6 @@ pub fn thread_audio(mtx_instrmnt: Arc<Mutex<Instrument>>) {
     loop {}
 }
 
-
-#[derive(PartialEq, Debug, Copy, Clone)]
-pub struct EnvTimeAmp { time: f32, min: f32, max: f32 } 
-impl EnvTimeAmp { pub fn new(time: f32, min: f32, max: f32) -> Self { Self { time, min, max } } }
-
-#[derive(Debug)]
-pub struct Envelope(f32, f32, f32, f32);
-
-impl Envelope {
-    fn new() -> Envelope {  return Envelope(1.0, 1.0, 0.2, 1.0); }
-
-    pub fn sample(&self, t: f32, t0: f32, t1: Option<f32>) -> f32 {
-        macro_rules! lerp { ($t:expr, $a:expr, $b:expr) => ($a*(1.0-$t) + $b*$t) }
-        macro_rules! lt { ($a:expr, $b:expr) => ( ($a.clamp(0.0, $b)/$b) ) }
-        match t1 {
-            Some(t1_) => { lerp!(lt!(t-t1_, self.3), self.2, 0.0) },
-            None => { 
-                lerp!(lt!(t-t0-self.0, self.1), lerp!(lt!(t-t0, self.0), 0.0, 1.0), self.2) 
-            }
-        }
-    }
-}
-
-pub trait WaveGenerator { fn gen(&self, t: f32, freq: f32) -> f32; }
-
-pub struct SinWave;
-impl WaveGenerator for SinWave { fn gen(&self, t: f32, freq: f32) -> f32 { (t*std::f32::consts::FRAC_PI_2*freq).sin() }}
-
-pub struct SquareWave;
-impl WaveGenerator for SquareWave { fn gen(&self, t: f32, freq: f32) -> f32 { (t*freq).sin() }}
-
 pub struct Instrument {
     sr: cpal::SampleRate,
     freq: f32,
@@ -79,17 +52,6 @@ pub struct Instrument {
     envelope: Envelope,
     key_to_freq: HashMap<KeyCode, f32>,
     clock: std::time::Instant
-}
-
-impl std::fmt::Debug for Instrument {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // self.sr.fmt(f);
-        // self.freq.fmt(f);
-        let _=self.cursor.fmt(f);
-        // self.keyboard_buffer.fmt(f);
-        // self.envelope.fmt(f);
-        return std::fmt::Result::Ok(());
-    }
 }
 
 impl Instrument {
@@ -111,7 +73,7 @@ impl Instrument {
             cursor: 0, 
             freq: 220., 
             sr: cpal::SampleRate(0),
-            wave_generator: Box::new(SinWave),
+            wave_generator: Box::new(crate::audio::waves::RandomWave::new()),
             keyboard_buffer: KeyboardBuffer::new(),
             envelope: Envelope::new(),
             key_to_freq: k2f,
@@ -132,7 +94,7 @@ impl Instrument {
 
     fn t(&self, i: u128) -> f32 { return ((self.cursor+i) as f32)/(self.sample_rate() as f32); }
 
-    pub fn gen(&self, i: u128) -> f32 {  
+    pub fn gen(&mut self, i: u128) -> f32 {  
         let t = self.t(i);
         let now = self.clock.elapsed().as_secs_f32();
 
@@ -143,8 +105,6 @@ impl Instrument {
             })
             .sum()
     }
-
-    // get t for wave generation fn 
 }
 
 
@@ -160,8 +120,21 @@ impl KeyboardHandler for Instrument {
 }
 
 
+impl std::fmt::Debug for Instrument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // self.sr.fmt(f);
+        // self.freq.fmt(f);
+        let _=self.cursor.fmt(f);
+        // self.keyboard_buffer.fmt(f);
+        // self.envelope.fmt(f);
+        return std::fmt::Result::Ok(());
+    }
+}
+
+
+
 mod audio_tests {
-    use crate::audio::{EnvTimeAmp, Envelope};
+    use crate::audio::waves::{EnvTimeAmp, Envelope};
 
     macro_rules! assert_approx_eq {
         ($a:expr, $b:expr) => {{
