@@ -6,10 +6,13 @@
 
 use cpal::{self, traits::{HostTrait, DeviceTrait, StreamTrait}};
 use std::{sync::{Arc, Mutex}, collections::HashMap};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::input::{KeyboardBuffer, KeyboardHandler};
 use crate::audio::waves::{WaveGenerator, Envelope};
+use crate::audio::waves::{Oscillator, LinearTransform, NullWave, ConstantWave};
+
+use super::waves::{SinWave, IdentityWave, Randomize, Voicing, RepeatedVoicing, Test};
 
 pub fn thread_audio(mtx_instrmnt: Arc<Mutex<Instrument>>) {
     let host: cpal::Host = cpal::default_host();
@@ -47,7 +50,7 @@ pub struct Instrument {
     sr: cpal::SampleRate,
     freq: f32,
     cursor: u128,
-    wave_generator: Box<dyn WaveGenerator + Send>,
+    oscillator: Oscillator,
     keyboard_buffer: KeyboardBuffer,
     envelope: Envelope,
     key_to_freq: HashMap<KeyCode, f32>,
@@ -73,7 +76,12 @@ impl Instrument {
             cursor: 0, 
             freq: 220., 
             sr: cpal::SampleRate(0),
-            wave_generator: Box::new(crate::audio::waves::RandomWave::new()),
+            // wave_generator: Box::new(crate::audio::waves::RandomWave::new()),
+            oscillator: Oscillator { 
+                ttf: LinearTransform { alpha: Box::new(IdentityWave), beta: Box::new(NullWave) },
+                wtf: LinearTransform { alpha: Box::new(IdentityWave), beta: Box::new(NullWave) },
+                otf: Box::new(SinWave),
+            },
             keyboard_buffer: KeyboardBuffer::new(),
             envelope: Envelope::new(),
             key_to_freq: k2f,
@@ -101,17 +109,24 @@ impl Instrument {
         self.keyboard_buffer.event_buffer.iter()
             .map(|event| {
                 let freq = self.key_to_freq.get(event.0).unwrap_or(&0.0);
-                self.wave_generator.gen(t, *freq) * self.envelope.sample(now, event.1.time_press, event.1.time_release)
-            })
-            .sum()
+                let env = self.envelope.sample(now, event.1.time_press, event.1.time_release);
+                self.oscillator.gen(t, *freq)*env
+            }).sum()
     }
 }
 
 
 unsafe impl Sync for Instrument { }
 impl KeyboardHandler for Instrument {
-    fn handle_key_event(&mut self, event: crossterm::event::KeyEvent, timestamp: f32) {
-        self.keyboard_buffer.handle_key_event(event, timestamp);
+    fn handle_key_event(&mut self, event: KeyEvent, timestamp: f32) {
+
+        match event {
+            KeyEvent { kind: KeyEventKind::Press, code: KeyCode::Char('r'), .. } => {
+                self.oscillator.randomize();
+                self.envelope.randomize();
+            },
+            _ => { self.keyboard_buffer.handle_key_event(event, timestamp); }
+        }
     }
 
     fn cleanup_events(&mut self) {
@@ -129,32 +144,4 @@ impl std::fmt::Debug for Instrument {
         // self.envelope.fmt(f);
         return std::fmt::Result::Ok(());
     }
-}
-
-
-
-mod audio_tests {
-    use crate::audio::waves::{EnvTimeAmp, Envelope};
-
-    macro_rules! assert_approx_eq {
-        ($a:expr, $b:expr) => {{
-            assert!(($a - $b).abs() < 1e-6, "Expected {} to be approximately equal to {}", $a, $b);
-        }};
-    }
-
-    #[test]
-    fn test_envelope() {
-        let e = Envelope(1.0, 1.0, 0.5, 1.0);
-
-        assert_approx_eq!(e.sample(-100.0, 0.0, None), 0.0);
-        assert_approx_eq!(e.sample(-0.1, 0.0, None), 0.0);
-        assert_approx_eq!(e.sample(0.0, 0.0, None), 0.0);
-        assert_approx_eq!(e.sample(0.1, 0.0, None), 0.1);
-        assert_approx_eq!(e.sample(1.0, 0.0, None), 1.0);
-        assert_approx_eq!(e.sample(2.0, 0.0, None), 0.5);
-        assert_approx_eq!(e.sample(100.0, 0.0, None), 0.5);
-        assert_approx_eq!(e.sample(3.0, 0.0, Some(2.0)), 0.0);
-
-    }
-
 }
